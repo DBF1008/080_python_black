@@ -68,6 +68,22 @@ class InvalidVariantHeader(Exception):
     pass
 
 
+def parse_bool_header(headers: MultiMapping[str], header_name: str) -> bool:
+    """Parse a boolean header value.
+
+    Returns False if the header is absent. Raises HeaderError for invalid values.
+    """
+    value = headers.get(header_name)
+    if value is None:
+        return False
+    normalized = value.strip().lower()
+    if normalized in ("true", "yes", "1"):
+        return True
+    if normalized in ("false", "no", "0"):
+        return False
+    raise HeaderError(f"Invalid value for {header_name}: {value}")
+
+
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option(
     "--bind-host",
@@ -181,7 +197,10 @@ async def handle(
             header = req_str[:first_newline_position]
             req_str = req_str[first_newline_position:]
 
-        only_diff = bool(request.headers.get(DIFF_HEADER, False))
+        try:
+            only_diff = parse_bool_header(request.headers, DIFF_HEADER)
+        except HeaderError as e:
+            return web.Response(status=400, text=e.args[0])
         formatted_str = await format_code(
             req_str=req_str,
             fast=fast,
@@ -261,14 +280,14 @@ def parse_mode(headers: MultiMapping[str]) -> black.Mode:
         pyi = False
         versions = set()
 
-    skip_string_normalization = bool(
-        headers.get(SKIP_STRING_NORMALIZATION_HEADER, False)
+    skip_string_normalization = parse_bool_header(
+        headers, SKIP_STRING_NORMALIZATION_HEADER
     )
-    skip_magic_trailing_comma = bool(headers.get(SKIP_MAGIC_TRAILING_COMMA, False))
-    skip_source_first_line = bool(headers.get(SKIP_SOURCE_FIRST_LINE, False))
+    skip_magic_trailing_comma = parse_bool_header(headers, SKIP_MAGIC_TRAILING_COMMA)
+    skip_source_first_line = parse_bool_header(headers, SKIP_SOURCE_FIRST_LINE)
 
-    preview = bool(headers.get(PREVIEW, False))
-    unstable = bool(headers.get(UNSTABLE, False))
+    preview = parse_bool_header(headers, PREVIEW)
+    unstable = parse_bool_header(headers, UNSTABLE)
     enable_features: set[black.Preview] = set()
     enable_unstable_features = headers.get(ENABLE_UNSTABLE_FEATURE, "").split(",")
     for piece in enable_unstable_features:

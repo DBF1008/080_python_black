@@ -283,6 +283,91 @@ class BlackDTestCase(AioHTTPTestCase):
         self.assertEqual(await response.text(), "1\n")
         self.assertEqual(response.status, 200)
 
+    # Boolean header parsing regression tests
+
+    async def test_bool_header_truthy_values(self) -> None:
+        """Headers with 'true', 'yes', '1' (case-insensitive) should enable the feature."""
+        for value in ("true", "True", "TRUE", "yes", "Yes", "YES", "1"):
+            response = await self.client.post(
+                "/", data=b'print("hello")\n', headers={blackd.PREVIEW: value}
+            )
+            self.assertEqual(
+                response.status,
+                204,
+                msg=f"Expected 204 for {blackd.PREVIEW}: {value!r}",
+            )
+
+    async def test_bool_header_falsy_values(self) -> None:
+        """Headers with 'false', 'no', '0' (case-insensitive) should disable the feature."""
+        for value in ("false", "False", "FALSE", "no", "No", "NO", "0"):
+            response = await self.client.post(
+                "/", data=b'print("hello")\n', headers={blackd.PREVIEW: value}
+            )
+            self.assertEqual(
+                response.status,
+                204,
+                msg=f"Expected 204 for {blackd.PREVIEW}: {value!r}",
+            )
+
+    async def test_bool_header_false_disables_skip_first_line(self) -> None:
+        """Sending 'false' for skip-source-first-line must NOT skip the first line."""
+        invalid_first_line = b"Header will be skipped\r\ni = [1,2,3]\nj = [1,2,3]\n"
+        # Without skip: should fail to parse
+        response = await self.client.post("/", data=invalid_first_line)
+        self.assertEqual(response.status, 400)
+        # With 'false': should also fail (feature disabled)
+        response = await self.client.post(
+            "/",
+            data=invalid_first_line,
+            headers={blackd.SKIP_SOURCE_FIRST_LINE: "false"},
+        )
+        self.assertEqual(response.status, 400)
+
+    async def test_bool_header_false_disables_diff(self) -> None:
+        """Sending 'false' for X-Diff must NOT produce diff output."""
+        response = await self.client.post(
+            "/",
+            data=b"print('hello world')",
+            headers={blackd.DIFF_HEADER: "false"},
+        )
+        self.assertEqual(response.status, 200)
+        result = await response.text()
+        # Should return formatted code, not a diff
+        self.assertEqual(result, 'print("hello world")\n')
+
+    async def test_bool_header_invalid_values(self) -> None:
+        """Invalid boolean header values should return 400."""
+        for value in ("invalid", "maybe", "2", "on", "off", "tru"):
+            response = await self.client.post(
+                "/", data=b'print("hello")\n', headers={blackd.PREVIEW: value}
+            )
+            self.assertEqual(
+                response.status,
+                400,
+                msg=f"Expected 400 for {blackd.PREVIEW}: {value!r}",
+            )
+
+    async def test_bool_header_invalid_diff(self) -> None:
+        """Invalid X-Diff header value should return 400."""
+        response = await self.client.post(
+            "/", data=b'print("hello")\n', headers={blackd.DIFF_HEADER: "invalid"}
+        )
+        self.assertEqual(response.status, 400)
+        content = await response.text()
+        self.assertIn("Invalid value for X-Diff", content)
+
+    async def test_bool_header_absent_defaults_to_false(self) -> None:
+        """When boolean headers are absent, features should be disabled by default."""
+        # No skip-source-first-line: invalid first line should cause parse error
+        invalid_first_line = b"Header will be skipped\r\ni = [1,2,3]\nj = [1,2,3]\n"
+        response = await self.client.post("/", data=invalid_first_line)
+        self.assertEqual(response.status, 400)
+        # No diff header: should return formatted code, not diff
+        response = await self.client.post("/", data=b"print('hello world')")
+        self.assertEqual(response.status, 200)
+        result = await response.text()
+        self.assertEqual(result, 'print("hello world")\n')
+
 
 @pytest.mark.blackd
 class BlackDConfiguredCorsTestCase(AioHTTPTestCase):
