@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from black.failure import Failure, classify_failure
 from black.output import err, out, style_output
 
 
@@ -47,9 +48,16 @@ class Report:
                 out(msg, bold=False)
             self.same_count += 1
 
-    def failed(self, src: Path, message: str) -> None:
+    def failed(self, src: Path, message: str, exc: Exception | None = None) -> None:
         """Increment the counter for failed reformatting. Write out a message."""
-        err(f"error: cannot format {src}: {message}")
+        if exc is not None:
+            failure = classify_failure(exc)
+            err(
+                f"error: cannot format {src}:"
+                f" [{failure.code.name}] {failure.summary}: {failure.detail}"
+            )
+        else:
+            err(f"error: cannot format {src}: {message}")
         self.failure_count += 1
 
     def path_ignored(self, path: Path, message: str) -> None:

@@ -23,6 +23,7 @@ import click
 import black
 from _black_version import version as __version__
 from black.concurrency import maybe_use_uvloop
+from black.failure import classify_failure
 
 # This is used internally by tests to shut down the server prematurely
 _stop_signal = asyncio.Event()
@@ -56,6 +57,7 @@ BLACK_HEADERS = [
 
 # Response headers
 BLACK_VERSION_HEADER = "X-Black-Version"
+X_BLACK_ERROR_CODE_HEADER = "X-Black-Error-Code"
 DEFAULT_MAX_BODY_SIZE = 5 * 1024 * 1024
 DEFAULT_WORKERS = os.cpu_count() or 1
 
@@ -169,7 +171,12 @@ async def handle(
         try:
             mode = parse_mode(request.headers)
         except HeaderError as e:
-            return web.Response(status=400, text=e.args[0])
+            failure = classify_failure(e)
+            return web.Response(
+                status=400,
+                headers={X_BLACK_ERROR_CODE_HEADER: str(failure.code.value)},
+                text=failure.detail,
+            )
         req_bytes = await request.read()
         charset = request.charset if request.charset is not None else "utf8"
         req_str = req_bytes.decode(charset)
@@ -205,14 +212,20 @@ async def handle(
     except black.NothingChanged:
         return web.Response(status=204, headers=headers)
     except black.InvalidInput as e:
-        return web.Response(status=400, headers=headers, text=str(e))
+        failure = classify_failure(e)
+        headers[X_BLACK_ERROR_CODE_HEADER] = str(failure.code.value)
+        return web.Response(status=400, headers=headers, text=failure.detail)
     except black.SourceASTParseError as e:
-        return web.Response(status=400, headers=headers, text=str(e))
+        failure = classify_failure(e)
+        headers[X_BLACK_ERROR_CODE_HEADER] = str(failure.code.value)
+        return web.Response(status=400, headers=headers, text=failure.detail)
     except web.HTTPException:
         raise
     except Exception as e:
         logging.exception("Exception during handling a request")
-        return web.Response(status=500, headers=headers, text=str(e))
+        failure = classify_failure(e)
+        headers[X_BLACK_ERROR_CODE_HEADER] = str(failure.code.value)
+        return web.Response(status=500, headers=headers, text=failure.detail)
 
 
 async def format_code(

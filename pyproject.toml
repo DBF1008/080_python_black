@@ -155,6 +155,7 @@ exclude = [
     "/src/black/concurrency.py",
     "/src/black/files.py",
     "/src/black/report.py",
+    "/src/black/failure.py",
     # Breaks the test suite when compiled (and is also useless):
     "/src/black/debug.py",
     # Compiled modules can't be run directly and that's a problem here:
