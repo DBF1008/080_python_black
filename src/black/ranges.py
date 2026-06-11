@@ -18,6 +18,24 @@ from black.nodes import (
 from blib2to3.pgen2.token import ASYNC, NEWLINE
 
 
+@dataclass(frozen=True)
+class LineRangesMetadata:
+    """Metadata about how line ranges were processed during formatting."""
+
+    original_lines: tuple[tuple[int, int], ...]
+    sanitized_lines: tuple[tuple[int, int], ...]
+    effective_lines: tuple[tuple[int, int], ...]
+    range_expanded: bool
+
+
+@dataclass(frozen=True)
+class FormatResult:
+    """Result of formatting with optional line-ranges metadata."""
+
+    content: str
+    metadata: LineRangesMetadata | None
+
+
 def parse_line_ranges(line_ranges: Sequence[str]) -> list[tuple[int, int]]:
     lines: list[tuple[int, int]] = []
     for lines_str in line_ranges:

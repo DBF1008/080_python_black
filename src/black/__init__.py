@@ -72,6 +72,8 @@ from black.parsing import (  # noqa F401
     stringify_ast,
 )
 from black.ranges import (
+    FormatResult,
+    LineRangesMetadata,
     adjusted_lines,
     convert_unchanged_lines,
     parse_line_ranges,
@@ -1133,6 +1135,37 @@ def format_file_contents(
     return dst_contents
 
 
+def format_file_contents_with_metadata(
+    src_contents: str,
+    *,
+    fast: bool,
+    mode: Mode,
+    lines: Collection[tuple[int, int]] = (),
+) -> FormatResult:
+    """Reformat contents of a file and return result with metadata.
+
+    Like :func:`format_file_contents`, but returns a :class:`FormatResult`.
+    Raises :class:`NothingChanged` with a ``metadata`` attribute when the
+    source is already well-formatted.
+    """
+    if mode.is_ipynb:
+        dst_contents = format_ipynb_string(src_contents, fast=fast, mode=mode)
+        result = FormatResult(content=dst_contents, metadata=None)
+    else:
+        result = format_str_with_metadata(src_contents, mode=mode, lines=lines)
+
+    if src_contents == result.content:
+        exc = NothingChanged()
+        exc.metadata = result.metadata  # type: ignore[attr-defined]
+        raise exc
+
+    if not fast and not mode.is_ipynb:
+        check_stability_and_equivalence(
+            src_contents, result.content, mode=mode, lines=lines
+        )
+    return result
+
+
 def format_cell(src: str, *, fast: bool, mode: Mode) -> str:
     """Format code in given cell of Jupyter notebook.
 
@@ -1246,19 +1279,61 @@ def format_str(
         hey
 
     """
+    content, _ = _format_str_tracked(src_contents, mode=mode, lines=lines)
+    return content
+
+
+def format_str_with_metadata(
+    src_contents: str, *, mode: Mode, lines: Collection[tuple[int, int]] = ()
+) -> FormatResult:
+    """Reformat a string and return result with line-ranges metadata.
+
+    Like :func:`format_str`, but returns a :class:`FormatResult` whose
+    ``metadata`` field carries a :class:`LineRangesMetadata` when *lines*
+    are specified.
+    """
+    content, metadata = _format_str_tracked(src_contents, mode=mode, lines=lines)
+    return FormatResult(content=content, metadata=metadata)
+
+
+def _format_str_tracked(
+    src_contents: str, *, mode: Mode, lines: Collection[tuple[int, int]] = ()
+) -> tuple[str, LineRangesMetadata | None]:
+    """Core of format_str that also returns line-ranges metadata."""
+    original_lines = tuple(lines) if lines else ()
+
     if lines:
         lines = sanitized_lines(lines, src_contents)
         if not lines:
-            return src_contents  # Nothing to format
+            metadata = LineRangesMetadata(
+                original_lines=original_lines,
+                sanitized_lines=(),
+                effective_lines=(),
+                range_expanded=False,
+            )
+            return src_contents, metadata
+
+    sanitized = tuple(lines) if lines else ()
     dst_contents = _format_str_once(src_contents, mode=mode, lines=lines)
     # Forced second pass to work around optional trailing commas (becoming
     # forced trailing commas on pass 2) interacting differently with optional
     # parentheses.  Admittedly ugly.
+    effective = sanitized
     if src_contents != dst_contents:
         if lines:
             lines = adjusted_lines(lines, src_contents, dst_contents)
-        return _format_str_once(dst_contents, mode=mode, lines=lines)
-    return dst_contents
+            effective = tuple(lines)
+        dst_contents = _format_str_once(dst_contents, mode=mode, lines=lines)
+
+    metadata = None
+    if original_lines:
+        metadata = LineRangesMetadata(
+            original_lines=original_lines,
+            sanitized_lines=sanitized,
+            effective_lines=effective,
+            range_expanded=(sanitized != effective),
+        )
+    return dst_contents, metadata
 
 
 def _format_str_once(

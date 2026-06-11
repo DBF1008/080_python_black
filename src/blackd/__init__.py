@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from collections.abc import Collection
 from concurrent.futures import Executor, ProcessPoolExecutor
 from datetime import datetime, timezone
 from functools import cache, partial
@@ -39,6 +40,7 @@ UNSTABLE = "X-Unstable"
 ENABLE_UNSTABLE_FEATURE = "X-Enable-Unstable-Feature"
 FAST_OR_SAFE_HEADER = "X-Fast-Or-Safe"
 DIFF_HEADER = "X-Diff"
+LINE_RANGES_HEADER = "X-Line-Ranges"
 
 BLACK_HEADERS = [
     PROTOCOL_VERSION_HEADER,
@@ -52,10 +54,13 @@ BLACK_HEADERS = [
     ENABLE_UNSTABLE_FEATURE,
     FAST_OR_SAFE_HEADER,
     DIFF_HEADER,
+    LINE_RANGES_HEADER,
 ]
 
 # Response headers
 BLACK_VERSION_HEADER = "X-Black-Version"
+EFFECTIVE_LINE_RANGES_HEADER = "X-Effective-Line-Ranges"
+RANGE_EXPANDED_HEADER = "X-Range-Expanded"
 DEFAULT_MAX_BODY_SIZE = 5 * 1024 * 1024
 DEFAULT_WORKERS = os.cpu_count() or 1
 
@@ -134,7 +139,11 @@ def make_app(
             cors(
                 allow_headers=(*BLACK_HEADERS, "Content-Type"),
                 allow_origins=frozenset(cors_allow_origins),
-                expose_headers=(BLACK_VERSION_HEADER,),
+                expose_headers=(
+                    BLACK_VERSION_HEADER,
+                    EFFECTIVE_LINE_RANGES_HEADER,
+                    RANGE_EXPANDED_HEADER,
+                ),
             )
         ],
     )
@@ -170,6 +179,15 @@ async def handle(
             mode = parse_mode(request.headers)
         except HeaderError as e:
             return web.Response(status=400, text=e.args[0])
+
+        lines: list[tuple[int, int]] = []
+        if LINE_RANGES_HEADER in request.headers:
+            try:
+                raw_ranges = request.headers[LINE_RANGES_HEADER].split(",")
+                lines = black.parse_line_ranges([r.strip() for r in raw_ranges])
+            except ValueError as e:
+                return web.Response(status=400, text=str(e))
+
         req_bytes = await request.read()
         charset = request.charset if request.charset is not None else "utf8"
         req_str = req_bytes.decode(charset)
@@ -182,7 +200,7 @@ async def handle(
             req_str = req_str[first_newline_position:]
 
         only_diff = bool(request.headers.get(DIFF_HEADER, False))
-        formatted_str = await format_code(
+        formatted_str, metadata = await format_code(
             req_str=req_str,
             fast=fast,
             mode=mode,
@@ -190,11 +208,18 @@ async def handle(
             only_diff=only_diff,
             executor=executor,
             executor_semaphore=executor_semaphore,
+            lines=lines,
         )
 
         # Put the source first line back
         req_str = header + req_str
         formatted_str = header + formatted_str
+
+        if metadata is not None:
+            headers[EFFECTIVE_LINE_RANGES_HEADER] = ",".join(
+                f"{s}-{e}" for s, e in metadata.effective_lines
+            )
+            headers[RANGE_EXPANDED_HEADER] = str(metadata.range_expanded).lower()
 
         return web.Response(
             content_type=request.content_type,
@@ -202,7 +227,13 @@ async def handle(
             headers=headers,
             text=formatted_str,
         )
-    except black.NothingChanged:
+    except black.NothingChanged as exc:
+        metadata = getattr(exc, "metadata", None)
+        if metadata is not None:
+            headers[EFFECTIVE_LINE_RANGES_HEADER] = ",".join(
+                f"{s}-{e}" for s, e in metadata.effective_lines
+            )
+            headers[RANGE_EXPANDED_HEADER] = str(metadata.range_expanded).lower()
         return web.Response(status=204, headers=headers)
     except black.InvalidInput as e:
         return web.Response(status=400, headers=headers, text=str(e))
@@ -224,23 +255,41 @@ async def format_code(
     only_diff: bool,
     executor: Executor,
     executor_semaphore: asyncio.BoundedSemaphore,
-) -> str:
+    lines: Collection[tuple[int, int]] = (),
+) -> tuple[str, black.LineRangesMetadata | None]:
     async with executor_semaphore:
         loop = asyncio.get_event_loop()
-        formatted_str = await loop.run_in_executor(
-            executor, partial(black.format_file_contents, req_str, fast=fast, mode=mode)
-        )
+        if lines:
+            result = await loop.run_in_executor(
+                executor,
+                partial(
+                    black.format_file_contents_with_metadata,
+                    req_str,
+                    fast=fast,
+                    mode=mode,
+                    lines=lines,
+                ),
+            )
+            formatted_str = result.content
+            metadata = result.metadata
+        else:
+            formatted_str = await loop.run_in_executor(
+                executor,
+                partial(black.format_file_contents, req_str, fast=fast, mode=mode),
+            )
+            metadata = None
 
         if not only_diff:
-            return formatted_str
+            return formatted_str, metadata
 
         now = datetime.now(timezone.utc)
         src_name = f"In\t{then}"
         dst_name = f"Out\t{now}"
-        return await loop.run_in_executor(
+        diff_str = await loop.run_in_executor(
             executor,
             partial(black.diff, req_str, formatted_str, src_name, dst_name),
         )
+        return diff_str, metadata
 
 
 def parse_mode(headers: MultiMapping[str]) -> black.Mode:
