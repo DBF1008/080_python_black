@@ -2,7 +2,12 @@
 
 import pytest
 
-from black.ranges import adjusted_lines, parse_line_ranges, sanitized_lines
+from black.ranges import (
+    _normalize_line_ranges,
+    adjusted_lines,
+    parse_line_ranges,
+    sanitized_lines,
+)
 
 
 @pytest.mark.parametrize(
@@ -273,3 +278,137 @@ def test_sanitize(
     3.   arg2, arg3):
     4.   pass"""
     assert sanitized == sanitized_lines(lines, source_no_trailing_nl)
+
+
+@pytest.mark.parametrize(
+    "ranges,expected",
+    [
+        # Empty
+        ([], []),
+        # Single range
+        ([(1, 5)], [(1, 5)]),
+        # Disjoint, already sorted
+        ([(1, 3), (5, 7)], [(1, 3), (5, 7)]),
+        # Overlapping
+        ([(1, 5), (3, 8)], [(1, 8)]),
+        # Adjacent (end == next_start - 1)
+        ([(1, 3), (4, 6)], [(1, 6)]),
+        # Contained
+        ([(1, 10), (3, 5)], [(1, 10)]),
+        # Unordered
+        ([(5, 7), (1, 3)], [(1, 3), (5, 7)]),
+        # Unordered + overlapping
+        ([(8, 12), (1, 5), (3, 9)], [(1, 12)]),
+        # Multiple merges
+        ([(1, 2), (3, 4), (5, 6), (10, 12)], [(1, 6), (10, 12)]),
+        # Duplicate ranges
+        ([(1, 5), (1, 5)], [(1, 5)]),
+        # Touching at a single point
+        ([(1, 3), (3, 5)], [(1, 5)]),
+    ],
+)
+def test_normalize_line_ranges(
+    ranges: list[tuple[int, int]], expected: list[tuple[int, int]]
+) -> None:
+    assert expected == _normalize_line_ranges(ranges)
+
+
+@pytest.mark.parametrize(
+    "lines,sanitized",
+    [
+        # Overlapping ranges get merged after clamping
+        (
+            [(1, 3), (2, 4)],
+            [(1, 4)],
+        ),
+        # Adjacent ranges get merged
+        (
+            [(1, 2), (3, 4)],
+            [(1, 4)],
+        ),
+        # Unordered + overlapping
+        (
+            [(3, 4), (1, 3)],
+            [(1, 4)],
+        ),
+        # Overlapping, one extends past source
+        (
+            [(1, 3), (2, 100)],
+            [(1, 4)],
+        ),
+        # Multiple disjoint stay disjoint
+        (
+            [(1, 1), (3, 4)],
+            [(1, 1), (3, 4)],
+        ),
+    ],
+)
+def test_sanitize_with_overlapping(
+    lines: list[tuple[int, int]], sanitized: list[tuple[int, int]]
+) -> None:
+    source = """\
+1. import re
+2. def func(arg1,
+3.   arg2, arg3):
+4.   pass
+"""
+    assert sanitized == sanitized_lines(lines, source)
+
+
+@pytest.mark.parametrize(
+    "lines,adjusted",
+    [
+        # Two adjacent ranges that both expand into the same diff block
+        # should be merged into a single range.
+        (
+            [(9, 10), (10, 11)],
+            [(9, 10)],
+        ),
+        # Overlapping ranges that span a diff block
+        (
+            [(9, 10), (9, 11)],
+            [(9, 10)],
+        ),
+        # Unordered input covering the same region
+        (
+            [(10, 11), (9, 10)],
+            [(9, 10)],
+        ),
+        # Disjoint ranges, one hits a diff block, they stay separate
+        (
+            [(1, 1), (10, 11)],
+            [(1, 1), (9, 10)],
+        ),
+    ],
+)
+def test_adjusted_lines_with_overlapping(
+    lines: list[tuple[int, int]], adjusted: list[tuple[int, int]]
+) -> None:
+    original_source = """\
+ 1. import re
+ 2. def foo(arg):
+ 3.   '''This is the foo function.
+ 4.
+ 5.   This is foo function's
+ 6.   docstring with more descriptive texts.
+ 7.   '''
+ 8.
+ 9. def func(arg1,
+10.   arg2, arg3):
+11.   pass
+12. # last line
+"""
+    modified_source = """\
+ 1. import re  # changed
+ 2. def foo(arg):
+ 3.   '''This is the foo function.
+ 4.
+ 5.   This is foo function's
+ 6.   docstring with more descriptive texts.
+ 7.   '''
+ 8.
+ 9. def func(arg1, arg2, arg3):
+11.   pass
+12. # last line changed
+"""
+    assert adjusted == adjusted_lines(lines, original_source, modified_source)

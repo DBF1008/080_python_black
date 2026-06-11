@@ -55,6 +55,31 @@ def is_valid_line_range(lines: tuple[int, int]) -> bool:
     return not lines or lines[0] <= lines[1]
 
 
+def _normalize_line_ranges(
+    ranges: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """Sorts and merges overlapping or adjacent line ranges.
+
+    For example:
+      [(3, 8), (1, 5)]       -> [(1, 8)]   (overlapping, unordered)
+      [(1, 3), (4, 6)]       -> [(1, 6)]   (adjacent)
+      [(1, 2), (5, 6)]       -> [(1, 2), (5, 6)]  (disjoint, unchanged)
+      [(1, 5), (2, 3)]       -> [(1, 5)]   (contained)
+    """
+    if not ranges:
+        return []
+    sorted_ranges = sorted(ranges)
+    merged: list[tuple[int, int]] = [sorted_ranges[0]]
+    for start, end in sorted_ranges[1:]:
+        prev_start, prev_end = merged[-1]
+        # Merge if overlapping (start <= prev_end) or adjacent (start == prev_end + 1)
+        if start <= prev_end + 1:
+            merged[-1] = (prev_start, max(prev_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def sanitized_lines(
     lines: Collection[tuple[int, int]], src_contents: str
 ) -> Collection[tuple[int, int]]:
@@ -80,7 +105,7 @@ def sanitized_lines(
             continue
         end = min(end, src_line_count)
         good_lines.append((start, end))
-    return good_lines
+    return _normalize_line_ranges(good_lines)
 
 
 def adjusted_lines(
@@ -160,7 +185,7 @@ def adjusted_lines(
         new_range = (new_start, new_end)
         if is_valid_line_range(new_range):
             new_lines.append(new_range)
-    return new_lines
+    return _normalize_line_ranges(new_lines)
 
 
 def convert_unchanged_lines(src_node: Node, lines: Collection[tuple[int, int]]) -> None:
