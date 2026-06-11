@@ -1758,6 +1758,121 @@ class BlackTestCase(BlackBaseTestCase):
                 (src_dir.resolve(), "pyproject.toml"),
             )
 
+    @pytest.mark.incompatible_with_mypyc
+    def test_load_toml_cache_invalidation(self) -> None:
+        """_load_toml returns fresh data after the file is modified on disk."""
+        with TemporaryDirectory() as workspace:
+            toml_path = Path(workspace) / "test.toml"
+            toml_path.write_text(
+                "[tool.black]\nline-length = 79\n", encoding="utf-8"
+            )
+
+            result1 = black.files._load_toml(str(toml_path))
+            self.assertEqual(result1["tool"]["black"]["line-length"], 79)
+
+            # Modify the file — sleep to ensure mtime changes
+            import time
+
+            time.sleep(0.05)
+            toml_path.write_text(
+                "[tool.black]\nline-length = 120\n", encoding="utf-8"
+            )
+
+            result2 = black.files._load_toml(str(toml_path))
+            self.assertEqual(result2["tool"]["black"]["line-length"], 120)
+
+    @pytest.mark.incompatible_with_mypyc
+    def test_find_project_root_cache_invalidation(self) -> None:
+        """Project root is re-evaluated when pyproject.toml changes."""
+        with TemporaryDirectory() as workspace:
+            root = Path(workspace)
+            src = root / "src"
+            src.mkdir()
+
+            # Initially, pyproject.toml has [tool.black]
+            pyproject = root / "pyproject.toml"
+            pyproject.write_text("[tool.black]\n", encoding="utf-8")
+
+            result1 = black.find_project_root((str(src),))
+            self.assertEqual(result1, (root.resolve(), "pyproject.toml"))
+
+            # Remove [tool.black] from pyproject.toml
+            import time
+
+            time.sleep(0.05)
+            pyproject.write_text("[tool.other]\n", encoding="utf-8")
+
+            result2 = black.find_project_root((str(src),))
+            # Should NOT return "pyproject.toml" anymore
+            self.assertNotEqual(result2[1], "pyproject.toml")
+
+    @pytest.mark.incompatible_with_mypyc
+    def test_get_gitignore_cache_invalidation(self) -> None:
+        """get_gitignore returns fresh patterns after .gitignore changes."""
+        with TemporaryDirectory() as workspace:
+            root = Path(workspace)
+            gitignore = root / ".gitignore"
+            gitignore.write_text("*.pyc\n", encoding="utf-8")
+
+            spec1 = black.get_gitignore(root)
+            self.assertTrue(spec1.match_file("foo.pyc"))
+            self.assertFalse(spec1.match_file("foo.log"))
+
+            # Modify .gitignore
+            import time
+
+            time.sleep(0.05)
+            gitignore.write_text("*.log\n", encoding="utf-8")
+
+            spec2 = black.get_gitignore(root)
+            self.assertFalse(spec2.match_file("foo.pyc"))
+            self.assertTrue(spec2.match_file("foo.log"))
+
+    @pytest.mark.incompatible_with_mypyc
+    def test_invalidate_caches(self) -> None:
+        """invalidate_caches() clears all internal caches."""
+        with TemporaryDirectory() as workspace:
+            toml_path = Path(workspace) / "test.toml"
+            toml_path.write_text("[tool.black]\n", encoding="utf-8")
+
+            # Populate caches
+            black.files._load_toml(str(toml_path))
+
+            self.assertGreater(len(black.files._load_toml_cache), 0)
+
+            # Clear
+            black.invalidate_caches()
+
+            self.assertEqual(len(black.files._load_toml_cache), 0)
+            self.assertEqual(len(black.files._find_project_root_cache), 0)
+            self.assertEqual(len(black.files._get_gitignore_cache), 0)
+
+    @pytest.mark.incompatible_with_mypyc
+    def test_config_reload_after_pyproject_change(self) -> None:
+        """Simulate a long-running process: config changes are picked up."""
+        with TemporaryDirectory() as workspace:
+            root = Path(workspace)
+            pyproject = root / "pyproject.toml"
+            pyproject.write_text(
+                "[tool.black]\nline-length = 79\n", encoding="utf-8"
+            )
+
+            # First parse — picks up line-length=79
+            config1 = black.parse_pyproject_toml(str(pyproject))
+            self.assertEqual(config1["line_length"], 79)
+
+            # Modify config
+            import time
+
+            time.sleep(0.05)
+            pyproject.write_text(
+                "[tool.black]\nline-length = 120\n", encoding="utf-8"
+            )
+
+            # Second parse — should pick up line-length=120
+            config2 = black.parse_pyproject_toml(str(pyproject))
+            self.assertEqual(config2["line_length"], 120)
+
     @patch(
         "black.files.find_user_pyproject_toml",
     )

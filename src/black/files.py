@@ -31,11 +31,38 @@ from black.report import Report
 if TYPE_CHECKING:
     import colorama
 
+# Type alias for stat validation data: (st_mtime_ns, st_size)
+_StatKey = tuple[int, int]
 
-@lru_cache
+
+def _stat_key(path: str) -> _StatKey | None:
+    """Return (mtime_ns, size) for path, or None if the file cannot be stat'd."""
+    try:
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+_load_toml_cache: dict[str, tuple[_StatKey, dict[str, Any]]] = {}
+
+
 def _load_toml(path: Path | str) -> dict[str, Any]:
-    with open(path, "rb") as f:
-        return tomllib.load(f)
+    str_path = str(path)
+    current_stat = _stat_key(str_path)
+
+    if str_path in _load_toml_cache:
+        cached_stat, cached_result = _load_toml_cache[str_path]
+        if current_stat is not None and current_stat == cached_stat:
+            return cached_result
+
+    with open(str_path, "rb") as f:
+        result = tomllib.load(f)
+
+    if current_stat is not None:
+        _load_toml_cache[str_path] = (current_stat, result)
+
+    return result
 
 
 @lru_cache
@@ -74,8 +101,33 @@ def find_project_root(
     return _find_project_root_cached(resolved_srcs)
 
 
-@lru_cache
+_find_project_root_cache: dict[tuple[str, ...], tuple[Path, str]] = {}
+
+
+def _validate_project_root(cached_root: Path, cached_method: str) -> bool:
+    """Check whether a cached project root discovery result is still valid."""
+    if cached_method == ".git directory":
+        return (cached_root / ".git").exists()
+    elif cached_method == ".hg directory":
+        return (cached_root / ".hg").is_dir()
+    elif cached_method == "pyproject.toml":
+        toml_path = cached_root / "pyproject.toml"
+        if not toml_path.is_file():
+            return False
+        # _load_toml is stat-aware, so this re-reads only if file changed
+        pyproject_toml = _load_toml(toml_path)
+        return "black" in pyproject_toml.get("tool", {})
+    else:
+        # "file system root" — always recompute since a marker may have been added
+        return False
+
+
 def _find_project_root_cached(srcs: tuple[str, ...]) -> tuple[Path, str]:
+    if srcs in _find_project_root_cache:
+        cached_root, cached_method = _find_project_root_cache[srcs]
+        if _validate_project_root(cached_root, cached_method):
+            return cached_root, cached_method
+
     path_srcs = [Path(src) for src in srcs]
 
     # A list of lists of parents for each 'src'. 'src' is included as a
@@ -91,17 +143,25 @@ def _find_project_root_cached(srcs: tuple[str, ...]) -> tuple[Path, str]:
 
     for directory in (common_base, *common_base.parents):
         if (directory / ".git").exists():
-            return directory, ".git directory"
+            result = directory, ".git directory"
+            _find_project_root_cache[srcs] = result
+            return result
 
         if (directory / ".hg").is_dir():
-            return directory, ".hg directory"
+            result = directory, ".hg directory"
+            _find_project_root_cache[srcs] = result
+            return result
 
         if (directory / "pyproject.toml").is_file():
             pyproject_toml = _load_toml(directory / "pyproject.toml")
             if "black" in pyproject_toml.get("tool", {}):
-                return directory, "pyproject.toml"
+                result = directory, "pyproject.toml"
+                _find_project_root_cache[srcs] = result
+                return result
 
-    return directory, "file system root"
+    result = directory, "file system root"
+    _find_project_root_cache[srcs] = result
+    return result
 
 
 def find_pyproject_toml(
@@ -246,19 +306,46 @@ def find_user_pyproject_toml() -> Path:
     return _cached_resolve(user_config_path)
 
 
-@lru_cache
+_get_gitignore_cache: dict[str, tuple[_StatKey | None, GitIgnoreSpec]] = {}
+
+
 def get_gitignore(root: Path) -> GitIgnoreSpec:
     """Return a GitIgnoreSpec matching gitignore content if present."""
     gitignore = root / ".gitignore"
+    str_gitignore = str(gitignore)
+    current_stat = _stat_key(str_gitignore)
+
+    if str_gitignore in _get_gitignore_cache:
+        cached_stat, cached_result = _get_gitignore_cache[str_gitignore]
+        if current_stat == cached_stat:  # None == None handles "still absent"
+            return cached_result
+
     lines: list[str] = []
     if gitignore.is_file():
         with gitignore.open(encoding="utf-8") as gf:
             lines = gf.readlines()
     try:
-        return GitIgnoreSpec.from_lines(lines)
+        result = GitIgnoreSpec.from_lines(lines)
     except GitIgnorePatternError as e:
         err(f"Could not parse {gitignore}: {e}")
         raise
+
+    _get_gitignore_cache[str_gitignore] = (current_stat, result)
+    return result
+
+
+def invalidate_caches() -> None:
+    """Clear all internal file-related caches.
+
+    This is useful when Black is used as a library in a long-running process
+    and the caller wants to ensure that changes to configuration files
+    (pyproject.toml, .gitignore, etc.) are picked up on the next invocation.
+    """
+    _load_toml_cache.clear()
+    _find_project_root_cache.clear()
+    _get_gitignore_cache.clear()
+    _cached_resolve.cache_clear()
+    find_user_pyproject_toml.cache_clear()
 
 
 def resolves_outside_root_or_cannot_stat(

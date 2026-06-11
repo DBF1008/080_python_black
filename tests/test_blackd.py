@@ -283,6 +283,14 @@ class BlackDTestCase(AioHTTPTestCase):
         self.assertEqual(await response.text(), "1\n")
         self.assertEqual(response.status, 200)
 
+    def test_invalidate_caches_callable(self) -> None:
+        """Verify that invalidate_caches() is available and doesn't error.
+
+        In a long-running blackd process, a caller might want to clear
+        Black's caches between requests or periodically.
+        """
+        black.invalidate_caches()
+
 
 @pytest.mark.blackd
 class BlackDConfiguredCorsTestCase(AioHTTPTestCase):
