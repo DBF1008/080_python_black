@@ -183,6 +183,42 @@ class BlackDTestCase(AioHTTPTestCase):
         )
         self.assertEqual(response.status, 204)
 
+    async def test_blackd_python_cell_magics(self) -> None:
+        response = await self.client.post(
+            "/",
+            data=b'print("hello")\n',
+            headers={blackd.PYTHON_CELL_MAGICS_HEADER: "custom1,custom2"},
+        )
+        self.assertEqual(response.status, 204)
+
+    async def test_blackd_invalid_python_cell_magics(self) -> None:
+        async def check(header_value: str, expected_status: int = 400) -> None:
+            response = await self.client.post(
+                "/",
+                data=b'print("hello")\n',
+                headers={blackd.PYTHON_CELL_MAGICS_HEADER: header_value},
+            )
+            self.assertEqual(response.status, expected_status)
+
+        await check("not-valid")
+        await check("123bad")
+        await check("has space")
+        await check("a,not-valid,b")
+
+    async def test_blackd_python_cell_magics_empty_ignored(self) -> None:
+        response = await self.client.post(
+            "/",
+            data=b'print("hello")\n',
+            headers={blackd.PYTHON_CELL_MAGICS_HEADER: ""},
+        )
+        self.assertEqual(response.status, 204)
+        response = await self.client.post(
+            "/",
+            data=b'print("hello")\n',
+            headers={blackd.PYTHON_CELL_MAGICS_HEADER: ",,"},
+        )
+        self.assertEqual(response.status, 204)
+
     async def test_blackd_response_black_version_header(self) -> None:
         response = await self.client.post("/")
         self.assertIsNotNone(response.headers.get(blackd.BLACK_VERSION_HEADER))
@@ -441,6 +477,16 @@ class BlackDClientTestCase(AioHTTPTestCase):
         diff = diff_header.sub(DETERMINISTIC_HEADER, diff)
 
         self.assertEqual(diff, expected)
+
+    async def test_python_cell_magics(self) -> None:
+        client = blackd.client.BlackDClient(
+            self.client.make_url("/"), python_cell_magics=["custom1", "custom2"]
+        )
+        unformatted_code = "def hello(): print('Hello, World!')"
+        expected = 'def hello():\n    print("Hello, World!")\n'
+        formatted_code = await client.format_code(unformatted_code)
+
+        self.assertEqual(formatted_code, expected)
 
     async def test_syntax_error(self) -> None:
         client = blackd.client.BlackDClient(self.client.make_url("/"))

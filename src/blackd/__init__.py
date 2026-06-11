@@ -39,6 +39,7 @@ UNSTABLE = "X-Unstable"
 ENABLE_UNSTABLE_FEATURE = "X-Enable-Unstable-Feature"
 FAST_OR_SAFE_HEADER = "X-Fast-Or-Safe"
 DIFF_HEADER = "X-Diff"
+PYTHON_CELL_MAGICS_HEADER = "X-Python-Cell-Magics"
 
 BLACK_HEADERS = [
     PROTOCOL_VERSION_HEADER,
@@ -52,6 +53,7 @@ BLACK_HEADERS = [
     ENABLE_UNSTABLE_FEATURE,
     FAST_OR_SAFE_HEADER,
     DIFF_HEADER,
+    PYTHON_CELL_MAGICS_HEADER,
 ]
 
 # Response headers
@@ -281,6 +283,17 @@ def parse_mode(headers: MultiMapping[str]) -> black.Mode:
                     f"Invalid value for {ENABLE_UNSTABLE_FEATURE}: {piece}",
                 ) from None
 
+    python_cell_magics: set[str] = set()
+    python_cell_magics_header = headers.get(PYTHON_CELL_MAGICS_HEADER, "").split(",")
+    for piece in python_cell_magics_header:
+        piece = piece.strip()
+        if piece:
+            if not piece.isidentifier():
+                raise HeaderError(
+                    f"Invalid value for {PYTHON_CELL_MAGICS_HEADER}: {piece}",
+                )
+            python_cell_magics.add(piece)
+
     return black.FileMode(
         target_versions=versions,
         is_pyi=pyi,
@@ -291,6 +304,7 @@ def parse_mode(headers: MultiMapping[str]) -> black.Mode:
         preview=preview,
         unstable=unstable,
         enabled_features=enable_features,
+        python_cell_magics=python_cell_magics,
     )
 
 

@@ -18,6 +18,7 @@ class BlackDClient:
         fast: bool = False,
         python_variant: str | None = None,
         diff: bool = False,
+        python_cell_magics: list[str] | None = None,
         headers: dict[str, str] | None = None,
     ):
         """
@@ -40,6 +41,9 @@ class BlackDClient:
             Otherwise, corresponds to the ``--target-version`` CLI option.
         :param diff: True to enable diff mode.
             Corresponds to the ``--diff`` CLI option.
+        :param python_cell_magics: A list of custom python cell magics to add
+            to the known set. Corresponds to the ``--python-cell-magics``
+            CLI option.
         :param headers: A dictionary of additional custom headers to send with
             the request.
         """
@@ -62,6 +66,8 @@ class BlackDClient:
             self.headers["X-Python-Variant"] = python_variant
         if diff:
             self.headers["X-Diff"] = "yes"
+        if python_cell_magics:
+            self.headers["X-Python-Cell-Magics"] = ",".join(python_cell_magics)
 
         if headers is not None:
             self.headers.update(headers)
